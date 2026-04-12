@@ -54,7 +54,7 @@ except Exception as e:
     pinecone_error = str(e)
 
 hf_token = st.secrets.get("HF_TOKEN", "YOUR_HF_TOKEN")
-hf_client = InferenceClient(model="HuggingFaceH4/zephyr-7b-beta", token=hf_token)
+hf_client = InferenceClient(model="mistralai/Mistral-7B-Instruct-v0.3", token=hf_token)
 
 # ==========================================
 # 2. FONCTIONS D'EXTRACTION ET DE SCORING
