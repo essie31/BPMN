@@ -1,6 +1,6 @@
-streamlit==1.32.0
-pandas==2.2.1
-plotly==5.19.0
-pinecone-client==3.2.2
-sentence-transformers==2.5.1
-huggingface-hub==0.21.4
+streamlit
+pandas
+plotly
+pinecone-client
+sentence-transformers
+huggingface-hub
