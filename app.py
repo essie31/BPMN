@@ -84,12 +84,11 @@ def extract_tasks_from_bpmn(uploaded_file):
 
 def generate_detailed_scoring(tasks_df, selected_pillar):
     """Génère des justifications et scores détaillés pour chaque tâche en fonction du pilier."""
-    # Base de connaissances simplifiée issue de votre PDF pour justifier sans appel API payant
     rules = {
-        "Big Data": {"keywords": ["vérification", "stock", "calcul", "sap", "donnée", "mesure", "tva"], "score": 3, "just": "Collecte et analyse de données essentielles pour l'optimisation des processus."},
-        "Robots Autonomes": {"keywords": ["coupe", "confection", "emballage", "retrait", "déchargement"], "score": 3, "just": "Potentiel d'automatisation via des machines spécialisées ou des AGV."},
+        "Big Data": {"keywords": ["vérification", "stock", "calcul", "sap", "donnée", "mesure", "tva", "commande"], "score": 3, "just": "Collecte et analyse de données essentielles pour l'optimisation des processus."},
+        "Robots Autonomes": {"keywords": ["coupe", "confection", "emballage", "retrait", "déchargement", "pesage"], "score": 3, "just": "Potentiel d'automatisation via des machines spécialisées ou des AGV."},
         "Simulation": {"keywords": ["planning", "planifier", "tracé", "délavage", "teinture"], "score": 3, "just": "Simulation des paramètres pour optimiser les temps de cycle et le rendement matière."},
-        "Intégration Systèmes": {"keywords": ["sap", "commande", "facture", "tva", "paiement"], "score": 4, "just": "Intégration critique entre l'ERP, les outils de production et les systèmes financiers."},
+        "Intégration Systèmes": {"keywords": ["sap", "commande", "facture", "tva", "paiement", "of"], "score": 4, "just": "Intégration critique entre l'ERP, les outils de production et les systèmes financiers."},
         "IIoT": {"keywords": ["machine", "teinture", "délavage", "confection", "stock"], "score": 3, "just": "Utilisation de capteurs connectés pour remonter les paramètres en temps réel."},
         "Cybersécurité": {"keywords": ["sap", "tva", "paiement", "facture", "dossier technique"], "score": 5, "just": "Protection maximale requise pour ces données financières ou de propriété intellectuelle."},
         "Cloud": {"keywords": ["sap", "commande", "client", "fournisseur", "stock"], "score": 4, "just": "Déploiement sur plateforme Cloud pour un accès partagé et en temps réel."},
@@ -105,11 +104,9 @@ def generate_detailed_scoring(tasks_df, selected_pillar):
         score = 1
         justification = "Non pertinent ou peu d'impact direct."
         
-        # Attribution logique des scores basée sur les mots clés du processus
         for kw in pillar_rule["keywords"]:
             if kw in task_name:
                 score = pillar_rule["score"]
-                # Boost pour SAP qui est le coeur du système
                 if "sap" in task_name and selected_pillar in ["Big Data", "Intégration Systèmes", "Cloud", "Cybersécurité"]:
                     score = 5
                 justification = pillar_rule["just"]
@@ -140,7 +137,7 @@ with tab1:
     if uploaded_bpmn is not None:
         st.success("Fichier importé avec succès !")
         tasks_df = extract_tasks_from_bpmn(uploaded_bpmn)
-        st.session_state['tasks_df'] = tasks_df # Sauvegarde pour l'onglet 2
+        st.session_state['tasks_df'] = tasks_df
         
         if not tasks_df.empty:
             st.subheader("Tableau Synthétique des Tâches (Extrait du fichier)")
@@ -261,7 +258,7 @@ with tab4:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        if prompt := st.chat_input("Ex: Comment intégrer les bons de commande dans SAP B1 ?"):
+        if prompt := st.chat_input("Ex: Comment configurer le MRP ?"):
             with st.chat_message("user"):
                 st.markdown(prompt)
             st.session_state.messages.append({"role": "user", "content": prompt})
@@ -277,22 +274,27 @@ with tab4:
                         contexts = [match['metadata']['text'] for match in search_results['matches']]
                         context_text = "\n\n---\n\n".join(contexts)
 
-                    prompt_template = f"""<s>[INST] Tu es un expert SAP Business One.
+                    system_message = f"""Tu es un expert SAP Business One.
 Règles: 
-1. Réponds UNIQUEMENT avec le contexte. 
+1. Réponds UNIQUEMENT avec le contexte ci-dessous. 
 2. Si la réponse n'y est pas, dis "Information introuvable."
 3. Réponds en français.
 
 CONTEXTE :
-{context_text}
+{context_text}"""
 
-QUESTION :
-{prompt} [/INST]"""
+                    messages = [
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": prompt}
+                    ]
 
                     try:
-                        answer = hf_client.text_generation(
-                            prompt_template, max_new_tokens=400, temperature=0.01, return_full_text=False
+                        response = hf_client.chat_completion(
+                            messages=messages, 
+                            max_tokens=400, 
+                            temperature=0.01
                         )
+                        answer = response.choices[0].message.content
                     except Exception as e:
                         answer = f"Erreur API : {str(e)}"
 
