@@ -57,10 +57,8 @@ except Exception as e:
 groq_api_key = st.secrets.get("GROQ_API_KEY", "YOUR_GROQ_API_KEY")
 groq_client = Groq(api_key=groq_api_key)
 
-# Modèle lourd pour la réflexion profonde (Description & Chat)
-GROQ_MODEL_REASONING = "llama-3.3-70b-versatile" 
-# Modèle ultra-rapide pour traiter des centaines de lignes sans timeout (Tableaux)
-GROQ_MODEL_FAST = "llama-3.1-8b-instant"
+# Modèle lourd pour une réflexion profonde et structurée
+GROQ_MODEL = "llama-3.3-70b-versatile" 
 
 # ==========================================
 # 2. FONCTIONS D'EXTRACTION AVANCÉE
@@ -96,10 +94,10 @@ def extract_bpmn_logic(uploaded_file):
         st.error(f"Erreur lors de la lecture : {e}")
         return pd.DataFrame(), []
 
-def analyze_with_groq(system_prompt, user_prompt, ai_model, max_tok=4000):
+def analyze_with_groq(system_prompt, user_prompt, max_tok=4000):
     try:
         completion = groq_client.chat.completions.create(
-            model=ai_model,
+            model=GROQ_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -124,7 +122,6 @@ st.header("1. Importation & Analyse du Processus")
 uploaded_bpmn = st.file_uploader("📂 Importez votre fichier processus (.bpmn ou .xml)", type=["bpmn", "xml"])
 
 if uploaded_bpmn is not None:
-    # Sécurité pour éviter le crash en cas de rechargement partiel de la page
     if ("last_uploaded_file" not in st.session_state 
         or st.session_state.last_uploaded_file != uploaded_bpmn.name
         or "flow_sequence" not in st.session_state):
@@ -145,55 +142,40 @@ if uploaded_bpmn is not None:
         if not st.session_state.get("analysis_done", False):
             if st.button("🧠 Lancer l'analyse intelligente du processus"):
                 
-                # 1. DESCRIPTION FLUIDE (Modèle Lourd)
+                tasks_text = ", ".join(task_names)
+                
+                # 1. DESCRIPTION FLUIDE
                 with st.spinner("Analyse du cheminement chronologique (flèches)..."):
                     sequence_text = "\n".join(flow_sequence)
                     desc_prompt = f"""Voici le cheminement exact du processus (les flèches) :
                     {sequence_text}
                     Rédige une description chronologique, fluide et logique de ce processus. Raconte l'histoire du flux étape par étape en suivant les flèches."""
                     st.session_state.ai_description = analyze_with_groq(
-                        "Tu es un analyste métier expert en BPMN.", desc_prompt, GROQ_MODEL_REASONING
+                        "Tu es un analyste métier expert en BPMN.", desc_prompt
                     )
                 
-                # 2. MATURITÉ I4.0 PAR LOTS (Chunking avec Modèle Rapide)
-                with st.spinner("Évaluation de TOUTES les tâches sur les 9 piliers (Traitement par lots pour éviter les coupures)..."):
-                    chunk_size = 25 # L'IA traitera 25 tâches à la fois pour ne pas s'épuiser
-                    full_mat_text = ""
+                # 2. MATURITÉ I4.0 PAR PILIER
+                with st.spinner("Évaluation de la maturité organisée par pilier..."):
+                    mat_prompt = f"""Voici les tâches du processus : {tasks_text}.
+                    Évalue la maturité Industrie 4.0 de ce processus. Tu DOIS traiter les 9 piliers un par un (Big Data, Robots Autonomes, Simulation, Intégration Systèmes, IIoT, Cybersécurité, Cloud, Fabrication Additive, Réalité Augmentée).
                     
-                    for i in range(0, len(task_names), chunk_size):
-                        chunk = task_names[i:i+chunk_size]
-                        tasks_text = ", ".join(chunk)
-                        
-                        mat_prompt = f"""Évalue UNIQUEMENT ces tâches spécifiques sur les 9 piliers de l'Industrie 4.0.
-                        Tâches à évaluer : {tasks_text}.
-                        FORMAT STRICT REQUIS (Génère uniquement ce tableau Markdown, rien d'autre) :
-                        | Tâche | Pilier (Big Data, IIoT, etc.) | Note (1-5) | Justification (très concis) |
-                        |---|---|---|---|"""
-                        
-                        res = analyze_with_groq("Tu es un auditeur Industrie 4.0.", mat_prompt, GROQ_MODEL_FAST)
-                        full_mat_text += res + "\n\n"
-                        
-                    st.session_state.ai_maturity = full_mat_text
+                    FORMAT STRICT REQUIS POUR CHAQUE PILIER :
+                    ### [Nom exact du pilier] (Score : [Note de 1 à 5])
+                    * **[Tâche A] :** Justification...
+                    * **[Tâche B] :** Justification...
+                    (Liste en bullet points uniquement les tâches pertinentes pour le pilier traité. Répète ce format pour les 9 piliers)."""
+                    
+                    st.session_state.ai_maturity = analyze_with_groq("Tu es un auditeur Industrie 4.0.", mat_prompt, max_tok=6000)
                 
-                # 3. RECOMMANDATIONS SAP B1 PAR LOTS
+                # 3. RECOMMANDATIONS SAP B1
                 with st.spinner("Génération des recommandations SAP B1..."):
-                    chunk_size = 40 # Lots un peu plus grands car moins de colonnes
-                    full_sap_text = ""
+                    sap_prompt = f"""Analyse ces tâches : {tasks_text}. 
+                    Génère un tableau proposant les 15 à 20 meilleures recommandations d'intégration techniques avec SAP Business One 10.0 pour ce processus.
+                    FORMAT STRICT REQUIS :
+                    | Tâche BPMN | Module SAP B1 concerné | Recommandation précise |
+                    |---|---|---|"""
                     
-                    for i in range(0, len(task_names), chunk_size):
-                        chunk = task_names[i:i+chunk_size]
-                        tasks_text = ", ".join(chunk)
-                        
-                        sap_prompt = f"""Analyse ces tâches : {tasks_text}. 
-                        Propose des recommandations d'intégration techniques avec SAP Business One 10.0 uniquement pour les tâches pertinentes de cette liste.
-                        FORMAT STRICT REQUIS :
-                        | Tâche BPMN | Module SAP B1 concerné | Recommandation précise |
-                        |---|---|---|"""
-                        
-                        res = analyze_with_groq("Tu es un architecte SAP.", sap_prompt, GROQ_MODEL_FAST)
-                        full_sap_text += res + "\n\n"
-                        
-                    st.session_state.ai_sap = full_sap_text
+                    st.session_state.ai_sap = analyze_with_groq("Tu es un architecte SAP.", sap_prompt)
                 
                 st.session_state.analysis_done = True
                 st.rerun()
@@ -208,7 +190,39 @@ if uploaded_bpmn is not None:
                     st.dataframe(tasks_df, use_container_width=True)
 
             def show_tab2():
-                st.subheader("Justification et Notation de CHAQUE tâche par Pilier I4.0")
+                st.subheader("Matrice de Maturité I4.0 & Radar")
+                
+                # PARSING DYNAMIQUE POUR LE RADAR
+                # Le code lit le texte de l'IA pour trouver "### Big Data (Score : 3)" et crée le graphique
+                radar_data = {"Pilier": [], "Score": []}
+                for line in st.session_state.ai_maturity.split('\n'):
+                    if line.startswith("###"):
+                        # Expression régulière pour capter le nom et le chiffre
+                        match = re.search(r'###\s*([^\(]+)\(Score\s*:\s*(\d)', line)
+                        if match:
+                            pilier_nom = match.group(1).strip()
+                            # Nettoyer les numéros éventuels (ex: "1. Big Data" -> "Big Data")
+                            pilier_nom = re.sub(r'^\d+\.\s*', '', pilier_nom)
+                            score_val = int(match.group(2))
+                            radar_data["Pilier"].append(pilier_nom)
+                            radar_data["Score"].append(score_val)
+                
+                # Si le parsing a réussi, on affiche le tableau et le Radar
+                if len(radar_data["Score"]) >= 3:
+                    df_radar = pd.DataFrame(radar_data)
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        st.dataframe(df_radar, use_container_width=True)
+                    with col2:
+                        fig = px.line_polar(df_radar, r='Score', theta='Pilier', line_close=True, range_r=[0,5])
+                        fig.update_traces(fill='toself', line_color="orange", fillcolor="rgba(255, 165, 0, 0.5)")
+                        fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 5])))
+                        st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("Le radar ne peut s'afficher car l'IA n'a pas respecté le format exact des scores.")
+                    
+                st.markdown("---")
+                st.markdown("### Détail par Pilier")
                 st.markdown(st.session_state.ai_maturity)
 
             def show_tab3():
@@ -256,8 +270,7 @@ if uploaded_bpmn is not None:
                                 DOCUMENTS DE LA BASE DE DONNÉES :
                                 {context_text}"""
 
-                                # Utilisation du modèle lourd (Reasoning) pour une belle réponse de consultant
-                                answer = analyze_with_groq(system_message, prompt, GROQ_MODEL_REASONING)
+                                answer = analyze_with_groq(system_message, prompt)
 
                             st.markdown(answer)
                             with st.expander("🔍 Voir les extraits bruts tirés de la base de données"):
