@@ -126,7 +126,12 @@ st.header("1. Importation & Analyse du Processus")
 uploaded_bpmn = st.file_uploader("📂 Importez votre fichier processus (.bpmn ou .xml)", type=["bpmn", "xml"])
 
 if uploaded_bpmn is not None:
-    if "last_uploaded_file" not in st.session_state or st.session_state.last_uploaded_file != uploaded_bpmn.name:
+    # On vérifie si c'est un nouveau fichier OU si flow_sequence manque en mémoire
+    if (
+        "last_uploaded_file" not in st.session_state 
+        or st.session_state.last_uploaded_file != uploaded_bpmn.name
+        or "flow_sequence" not in st.session_state
+    ):
         tasks_df, flow_sequence = extract_bpmn_logic(uploaded_bpmn)
         st.session_state.tasks_df = tasks_df
         st.session_state.flow_sequence = flow_sequence
