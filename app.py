@@ -54,7 +54,8 @@ except Exception as e:
     pinecone_error = str(e)
 
 hf_token = st.secrets.get("HF_TOKEN", "YOUR_HF_TOKEN")
-hf_client = InferenceClient(model="mistralai/Mistral-7B-Instruct-v0.3", token=hf_token)
+# Utilisation de Phi-3 : 100% gratuit, aucun blocage de licence, excellent pour le RAG
+hf_client = InferenceClient(model="microsoft/Phi-3-mini-4k-instruct", token=hf_token)
 
 # ==========================================
 # 2. FONCTIONS D'EXTRACTION ET DE SCORING
@@ -245,7 +246,7 @@ with tab3:
 
 # --- ONGLET 4: ASSISTANT IA ---
 with tab4:
-    st.header("🤖 Assistant SAP B1 (Open Source - Mistral)")
+    st.header("🤖 Assistant SAP B1 (Open Source)")
     st.markdown("Posez vos questions. L'IA lit uniquement vos documents vectorisés (Pinecone).")
 
     if not pinecone_connected:
@@ -289,6 +290,7 @@ CONTEXTE :
                     ]
 
                     try:
+                        # Utilisation de la nouvelle syntaxe conversationnelle
                         response = hf_client.chat_completion(
                             messages=messages, 
                             max_tokens=400, 
