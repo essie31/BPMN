@@ -1,6 +1,6 @@
 streamlit
 pandas
 plotly
-pinecone
+pinecone-client
 sentence-transformers
-huggingface-hub
+groq
