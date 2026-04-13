@@ -54,39 +54,51 @@ except Exception as e:
     pinecone_connected = False
     pinecone_error = str(e)
 
-# Initialisation du client Groq
 groq_api_key = st.secrets.get("GROQ_API_KEY", "YOUR_GROQ_API_KEY")
 groq_client = Groq(api_key=groq_api_key)
-GROQ_MODEL = "llama-3.3-70b-versatile" # Modèle très puissant pour l'analyse
+# Utilisation du dernier modèle puissant de Groq
+GROQ_MODEL = "llama-3.3-70b-versatile" 
 
 # ==========================================
-# 2. FONCTIONS D'EXTRACTION ET D'ANALYSE DYNAMIQUE
+# 2. FONCTIONS D'EXTRACTION AVANCÉE (TÂCHES + FLÈCHES)
 # ==========================================
-def extract_tasks_from_bpmn(uploaded_file):
-    """Parse le fichier XML/BPMN et extrait les tâches."""
+def extract_bpmn_logic(uploaded_file):
+    """Extrait les tâches ET les flèches (sequenceFlow) pour comprendre la logique chronologique."""
     try:
         tree = ET.parse(uploaded_file)
         root = tree.getroot()
-        namespaces = {'bpmn': 'http://www.omg.org/spec/BPMN/20100524/MODEL'}
-        extracted_tasks = []
-        task_types = ['task', 'userTask', 'manualTask', 'serviceTask', 'sendTask', 'receiveTask', 'subProcess']
         
-        for task_type in task_types:
-            for task in root.findall(f'.//bpmn:{task_type}', namespaces):
-                task_name = task.get('name')
-                if task_name:
-                    extracted_tasks.append({
-                        "Étape": "Général",
-                        "Processus": task_name.strip().replace('\n', ' '),
-                        "Type de Tâche": task_type
-                    })
-        return pd.DataFrame(extracted_tasks)
+        # 1. Récupérer tous les éléments nommés (Tâches, Événements, Gateways)
+        elements = {}
+        tasks_list = []
+        
+        for elem in root.iter():
+            tag_name = elem.tag.lower()
+            if 'id' in elem.attrib and 'name' in elem.attrib:
+                elem_id = elem.attrib['id']
+                name = elem.attrib['name'].replace('\n', ' ').strip()
+                if name: # Si l'élément a un nom visible
+                    elements[elem_id] = name
+                    # Si c'est une tâche, on l'ajoute au tableau
+                    if 'task' in tag_name or 'subprocess' in tag_name:
+                        tasks_list.append({"Processus": name, "Type": elem.tag.split('}')[-1]})
+
+        # 2. Récupérer l'ordre (Les flèches / SequenceFlows)
+        flows = []
+        for flow in root.iter():
+            if 'sequenceflow' in flow.tag.lower():
+                source = flow.get('sourceRef')
+                target = flow.get('targetRef')
+                if source in elements and target in elements:
+                    flows.append(f"[{elements[source]}] ➔ [{elements[target]}]")
+                    
+        return pd.DataFrame(tasks_list), flows
     except Exception as e:
         st.error(f"Erreur lors de la lecture du fichier BPMN : {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(), []
 
-def analyze_with_groq(system_prompt, user_prompt):
-    """Fonction générique pour appeler l'API Groq."""
+def analyze_with_groq(system_prompt, user_prompt, max_tok=4000):
+    """Fonction générique pour appeler l'API Groq avec plus de tokens pour les longs tableaux."""
     try:
         completion = groq_client.chat.completions.create(
             model=GROQ_MODEL,
@@ -94,8 +106,8 @@ def analyze_with_groq(system_prompt, user_prompt):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.2, # Température basse pour être factuel
-            max_tokens=2000
+            temperature=0.2, 
+            max_tokens=max_tok
         )
         return completion.choices[0].message.content
     except Exception as e:
@@ -106,98 +118,84 @@ def analyze_with_groq(system_prompt, user_prompt):
 # ==========================================
 st.title("🏭 Hub d'Intégration : BPMN & SAP Business One 10.0")
 
-# Option pour le mode impression (retire les onglets)
 st.sidebar.header("Options d'affichage")
 print_mode = st.sidebar.checkbox("🖨️ Mode Impression (Vue globale)")
-st.sidebar.info("Cochez cette case pour afficher tout le contenu sur une seule page, puis faites **Ctrl+P** pour imprimer en PDF.")
+st.sidebar.info("Cochez cette case pour tout afficher sur une page, puis Ctrl+P.")
 
-st.header("1. Analyse du Processus")
+st.header("1. Importation & Analyse du Processus")
 uploaded_bpmn = st.file_uploader("📂 Importez votre fichier processus (.bpmn ou .xml)", type=["bpmn", "xml"])
 
 if uploaded_bpmn is not None:
-    # On extrait les tâches si c'est un nouveau fichier
     if "last_uploaded_file" not in st.session_state or st.session_state.last_uploaded_file != uploaded_bpmn.name:
-        st.session_state.tasks_df = extract_tasks_from_bpmn(uploaded_bpmn)
+        tasks_df, flow_sequence = extract_bpmn_logic(uploaded_bpmn)
+        st.session_state.tasks_df = tasks_df
+        st.session_state.flow_sequence = flow_sequence
         st.session_state.last_uploaded_file = uploaded_bpmn.name
-        st.session_state.analysis_done = False # Reset l'analyse
+        st.session_state.analysis_done = False 
         
     tasks_df = st.session_state.tasks_df
+    flow_sequence = st.session_state.flow_sequence
     
     if not tasks_df.empty:
-        st.success(f"{len(tasks_df)} tâches trouvées dans le fichier.")
+        st.success(f"{len(tasks_df)} tâches et {len(flow_sequence)} connexions (flèches) trouvées !")
         
-        # Bouton pour lancer l'analyse dynamique
         if not st.session_state.get("analysis_done", False):
-            if st.button("🧠 Lancer une analyse complète"):
+            if st.button("🧠 Lancer l'analyse intelligente du processus"):
+                
                 tasks_text = ", ".join(tasks_df["Processus"].tolist())
+                sequence_text = "\n".join(flow_sequence)
                 
-                with st.spinner("Génération de la description logique..."):
-                    desc_prompt = f"Voici les tâches extraites d'un processus industriel : {tasks_text}. Rédige une description logique de ce processus divisée en 3 ou 4 phases claires avec des bullet points."
-                    st.session_state.ai_description = analyze_with_groq("Tu es un expert BPMN.", desc_prompt)
+                # 1. DESCRIPTION FLUIDE BASÉE SUR LES FLÈCHES
+                with st.spinner("Analyse du cheminement chronologique (flèches)..."):
+                    desc_prompt = f"""Voici le cheminement exact du processus (les flèches reliant les étapes) :
+                    {sequence_text}
+                    Rédige une description chronologique, fluide et logique de ce processus métier. Raconte l'histoire du flux étape par étape en suivant les flèches."""
+                    st.session_state.ai_description = analyze_with_groq("Tu es un analyste métier expert en BPMN.", desc_prompt)
                 
-                with st.spinner("Évaluation des 9 piliers de l'Industrie 4.0..."):
-                    mat_prompt = f"""Évalue ces tâches BPMN : {tasks_text}.
-                    Pour CHACUN des 9 piliers suivants (Big Data, Robots Autonomes, Simulation, Intégration Systèmes, IIoT, Cybersécurité, Cloud, Fabrication Additive, Réalité Augmentée), donne une note de 1 à 5 et une très brève justification.
-                    FORMAT STRICT REQUIS :
-                    Pilier | Note | Justification
-                    Big Data | 3 | Explication...
-                    (Génère uniquement ce tableau)"""
-                    st.session_state.ai_maturity = analyze_with_groq("Tu es un auditeur Industrie 4.0.", mat_prompt)
+                # 2. ÉVALUATION DE CHAQUE TÂCHE PAR PILIER
+                with st.spinner("Évaluation de TOUTES les tâches sur les 9 piliers..."):
+                    mat_prompt = f"""Génère un tableau d'évaluation strict. Pour chaque tâche mentionnée ci-dessous, tu DOIS évaluer son potentiel sur les 9 piliers de l'Industrie 4.0.
+                    Liste des tâches : {tasks_text}.
+                    FORMAT STRICT REQUIS POUR LE TABLEAU (Génère uniquement ce tableau en Markdown) :
+                    | Tâche | Pilier (Big Data, IIoT, etc.) | Note (1-5) | Justification (sois très concis) |
+                    |---|---|---|---|"""
+                    st.session_state.ai_maturity = analyze_with_groq("Tu es un auditeur Industrie 4.0 intransigeant.", mat_prompt, max_tok=6000)
                 
+                # 3. RECOMMANDATIONS SAP
                 with st.spinner("Génération des recommandations SAP B1..."):
-                    sap_prompt = f"""Pour les tâches suivantes : {tasks_text}. 
-                    Propose 7 à 10 recommandations d'intégration spécifiques avec SAP Business One 10.0.
+                    sap_prompt = f"""Analyse ces tâches : {tasks_text}. 
+                    Génère un tableau proposant des recommandations d'intégration techniques et précises avec SAP Business One 10.0 pour les tâches les plus pertinentes.
                     FORMAT STRICT REQUIS :
-                    Tâche BPMN | Module SAP B1 | Recommandation
-                    Tâche X | Achats | Explication...
-                    (Génère uniquement ce tableau markdown)"""
-                    st.session_state.ai_sap = analyze_with_groq("Tu es un architecte SAP Business One.", sap_prompt)
+                    | Tâche BPMN | Module SAP B1 concerné | Recommandation précise |
+                    |---|---|---|"""
+                    st.session_state.ai_sap = analyze_with_groq("Tu es un architecte technique SAP Business One.", sap_prompt)
                 
                 st.session_state.analysis_done = True
                 st.rerun()
 
-        # AFFICHAGE DES RÉSULTATS (Avec ou sans onglets selon le Mode Impression)
+        # AFFICHAGE DES RÉSULTATS
         if st.session_state.get("analysis_done", False):
             
-            # --- FONCTIONS D'AFFICHAGE ---
             def show_tab1():
-                st.subheader("Tableau Synthétique des Tâches")
-                st.dataframe(tasks_df, use_container_width=True)
-                st.subheader("Description Logique du Processus (Générée par l'IA)")
+                st.subheader("Description Logique du Flux (Suivi des flèches)")
                 st.markdown(st.session_state.ai_description)
+                with st.expander("Voir les tâches brutes extraites"):
+                    st.dataframe(tasks_df, use_container_width=True)
 
             def show_tab2():
-                st.subheader("Évaluation Indice de Maturité I4.0")
-                # Parsing dynamique du texte retourné par Groq pour faire le graphique
-                lines = st.session_state.ai_maturity.split('\n')
-                pilier_data = {"Pilier": [], "Score": []}
-                for line in lines:
-                    if "|" in line and "Pilier" not in line and "---" not in line:
-                        parts = [p.strip() for p in line.split("|")]
-                        if len(parts) >= 3:
-                            # Cleanup du texte pour extraire le score
-                            try:
-                                score = int(re.search(r'\d+', parts[1]).group())
-                                pilier_data["Pilier"].append(parts[0])
-                                pilier_data["Score"].append(score)
-                            except:
-                                pass
-                
-                if len(pilier_data["Score"]) > 0:
-                    radar_df = pd.DataFrame(pilier_data)
-                    fig = px.line_polar(radar_df, r='Score', theta='Pilier', line_close=True, range_r=[0,5])
-                    fig.update_traces(fill='toself', line_color="orange", fillcolor="rgba(255, 165, 0, 0.5)")
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                st.markdown("### Justifications Détaillées")
+                st.subheader("Justification et Notation de chaque tâche par Pilier I4.0")
                 st.markdown(st.session_state.ai_maturity)
+                # Remarque : Pour un Radar global dynamique, nous l'avons retiré ici car la matrice générée par l'IA est maintenant textuelle et très complexe. 
+                # L'accent est mis sur la justification de CHAQUE tâche comme demandé.
 
             def show_tab3():
                 st.subheader("Propositions d'Intégration SAP Business One 10.0")
                 st.markdown(st.session_state.ai_sap)
 
             def show_tab4():
-                st.subheader("🤖 Assistant SAP B1 (RAG via Groq)")
+                st.subheader("🤖 Assistant Expert SAP B1 (Recherche Documentaire)")
+                st.markdown("L'IA synthétise vos documents SAP vectorisés pour formuler de vraies réponses construites.")
+                
                 if not pinecone_connected:
                     st.error(f"Erreur Pinecone : {pinecone_error}")
                 else:
@@ -208,27 +206,32 @@ if uploaded_bpmn is not None:
                         with st.chat_message(message["role"]):
                             st.markdown(message["content"])
 
-                    if prompt := st.chat_input("Ex: Comment configurer le MRP ?"):
+                    if prompt := st.chat_input("Ex: Comment le MRP optimise-t-il la production ?"):
                         with st.chat_message("user"):
                             st.markdown(prompt)
                         st.session_state.messages.append({"role": "user", "content": prompt})
 
                         with st.chat_message("assistant"):
-                            with st.spinner("Recherche (Pinecone) et Génération (Groq)..."):
+                            with st.spinner("Exploration de la base de données & Synthèse..."):
                                 query_embedding = model.encode(prompt).tolist()
-                                search_results = index.query(vector=query_embedding, top_k=3, include_metadata=True)
+                                search_results = index.query(vector=query_embedding, top_k=5, include_metadata=True) # Augmenté à top_k=5 pour plus de contexte
                                 
                                 if not search_results['matches']:
-                                    context_text = "Aucune information trouvée dans la base."
+                                    context_text = "Aucune documentation pertinente trouvée dans la base."
                                 else:
                                     contexts = [match['metadata']['text'] for match in search_results['matches']]
                                     context_text = "\n\n---\n\n".join(contexts)
 
-                                system_message = f"""Tu es un expert SAP Business One.
-                                1. Réponds UNIQUEMENT avec le contexte ci-dessous. 
-                                2. Si l'info n'y est pas, dis "Information introuvable."
-                                3. Réponds en français.
-                                CONTEXTE :
+                                # NOUVEAU PROMPT POUR LE RAG : SYNTHÈSE INTELLIGENTE
+                                system_message = f"""Tu es un Consultant Senior SAP Business One.
+                                Ton rôle est d'apporter une réponse de haute qualité, claire, experte et structurée à l'utilisateur, en te basant **exclusivement** sur la documentation ci-dessous extraite de la base de données de l'entreprise.
+                                
+                                RÈGLES CRITIQUES :
+                                1. NE FAIS PAS de simple "copier-coller". Synthétise l'information, regroupe les idées et formule une réponse fluide et professionnelle (utilise des puces si nécessaire).
+                                2. Si les extraits fournis ne permettent pas de répondre à la question, dis poliment que tu n'as pas trouvé l'information dans la documentation SAP fournie. N'invente rien.
+                                3. Réponds toujours en français.
+
+                                DOCUMENTS DE LA BASE DE DONNÉES :
                                 {context_text}"""
 
                                 try:
@@ -238,21 +241,20 @@ if uploaded_bpmn is not None:
                                             {"role": "system", "content": system_message},
                                             {"role": "user", "content": prompt}
                                         ],
-                                        temperature=0.01
+                                        temperature=0.2
                                     )
                                     answer = response.choices[0].message.content
                                 except Exception as e:
                                     answer = f"Erreur API Groq : {str(e)}"
 
                             st.markdown(answer)
-                            with st.expander("🔍 Sources (Pinecone)"):
+                            with st.expander("🔍 Voir les extraits bruts tirés de la base de données"):
                                 st.write(context_text)
                                 
                         st.session_state.messages.append({"role": "assistant", "content": answer})
 
-            # --- LOGIQUE D'AFFICHAGE SELON LE MODE ---
             if print_mode:
-                st.warning("🖨️ Mode Impression activé. Faites **Ctrl+P** pour imprimer ou sauvegarder en PDF. Décochez l'option dans la barre latérale pour retrouver les onglets.")
+                st.warning("🖨️ Mode Impression activé. Ctrl+P pour imprimer.")
                 st.markdown("---")
                 show_tab1()
                 st.markdown("---")
@@ -262,7 +264,7 @@ if uploaded_bpmn is not None:
                 st.markdown("---")
                 show_tab4()
             else:
-                tab1, tab2, tab3, tab4 = st.tabs(["📋 Processus", "🕸️ Maturité I4.0", "🔗 Intégrations SAP", "🤖 Chat RAG"])
+                tab1, tab2, tab3, tab4 = st.tabs(["📋 Processus Chronologique", "🕸️ Matrice Maturité", "🔗 Intégrations SAP", "🤖 Assistant RAG"])
                 with tab1: show_tab1()
                 with tab2: show_tab2()
                 with tab3: show_tab3()
