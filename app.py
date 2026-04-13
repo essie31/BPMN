@@ -3,9 +3,10 @@ import pandas as pd
 import plotly.express as px
 import xml.etree.ElementTree as ET
 import os
+import re
 from pinecone import Pinecone
 from sentence_transformers import SentenceTransformer
-from huggingface_hub import InferenceClient
+from groq import Groq
 
 # ==========================================
 # 0. CONFIGURATION & MOT DE PASSE
@@ -22,10 +23,10 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.text_input("🔒 Entrez le mot de passe pour accéder à l'application", type="password", on_change=password_entered, key="password")
+        st.text_input("🔒 Entrez le mot de passe", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
-        st.text_input("🔒 Entrez le mot de passe pour accéder à l'application", type="password", on_change=password_entered, key="password")
+        st.text_input("🔒 Entrez le mot de passe", type="password", on_change=password_entered, key="password")
         st.error("😕 Mot de passe incorrect")
         return False
     return True
@@ -53,15 +54,16 @@ except Exception as e:
     pinecone_connected = False
     pinecone_error = str(e)
 
-hf_token = st.secrets.get("HF_TOKEN", "YOUR_HF_TOKEN")
-# Utilisation de Phi-3 : 100% gratuit, aucun blocage de licence, excellent pour le RAG
-hf_client = InferenceClient(model="microsoft/Phi-3-mini-4k-instruct", token=hf_token)
+# Initialisation du client Groq
+groq_api_key = st.secrets.get("GROQ_API_KEY", "YOUR_GROQ_API_KEY")
+groq_client = Groq(api_key=groq_api_key)
+GROQ_MODEL = "llama3-70b-8192" # Modèle très puissant pour l'analyse
 
 # ==========================================
-# 2. FONCTIONS D'EXTRACTION ET DE SCORING
+# 2. FONCTIONS D'EXTRACTION ET D'ANALYSE DYNAMIQUE
 # ==========================================
 def extract_tasks_from_bpmn(uploaded_file):
-    """Parse le fichier XML/BPMN et extrait les tâches dynamiquement."""
+    """Parse le fichier XML/BPMN et extrait les tâches."""
     try:
         tree = ET.parse(uploaded_file)
         root = tree.getroot()
@@ -83,225 +85,188 @@ def extract_tasks_from_bpmn(uploaded_file):
         st.error(f"Erreur lors de la lecture du fichier BPMN : {e}")
         return pd.DataFrame()
 
-def generate_detailed_scoring(tasks_df, selected_pillar):
-    """Génère des justifications et scores détaillés pour chaque tâche en fonction du pilier."""
-    rules = {
-        "Big Data": {"keywords": ["vérification", "stock", "calcul", "sap", "donnée", "mesure", "tva", "commande"], "score": 3, "just": "Collecte et analyse de données essentielles pour l'optimisation des processus."},
-        "Robots Autonomes": {"keywords": ["coupe", "confection", "emballage", "retrait", "déchargement", "pesage"], "score": 3, "just": "Potentiel d'automatisation via des machines spécialisées ou des AGV."},
-        "Simulation": {"keywords": ["planning", "planifier", "tracé", "délavage", "teinture"], "score": 3, "just": "Simulation des paramètres pour optimiser les temps de cycle et le rendement matière."},
-        "Intégration Systèmes": {"keywords": ["sap", "commande", "facture", "tva", "paiement", "of"], "score": 4, "just": "Intégration critique entre l'ERP, les outils de production et les systèmes financiers."},
-        "IIoT": {"keywords": ["machine", "teinture", "délavage", "confection", "stock"], "score": 3, "just": "Utilisation de capteurs connectés pour remonter les paramètres en temps réel."},
-        "Cybersécurité": {"keywords": ["sap", "tva", "paiement", "facture", "dossier technique"], "score": 5, "just": "Protection maximale requise pour ces données financières ou de propriété intellectuelle."},
-        "Cloud": {"keywords": ["sap", "commande", "client", "fournisseur", "stock"], "score": 4, "just": "Déploiement sur plateforme Cloud pour un accès partagé et en temps réel."},
-        "Fabrication Additive": {"keywords": ["prototype", "échantillon", "modèle"], "score": 3, "just": "Utilisation potentielle de l'impression 3D pour la création d'accessoires ou de gabarits."},
-        "Réalité Augmentée": {"keywords": ["vérification", "mesure", "retrait", "confection", "coupe"], "score": 2, "just": "Possibilité d'utiliser la RA pour assister visuellement les opérateurs sur poste."}
-    }
-    
-    results = []
-    pillar_rule = rules.get(selected_pillar, {"keywords": [], "score": 1, "just": "Peu de pertinence directe pour ce pilier."})
-    
-    for _, row in tasks_df.iterrows():
-        task_name = row["Processus"].lower()
-        score = 1
-        justification = "Non pertinent ou peu d'impact direct."
-        
-        for kw in pillar_rule["keywords"]:
-            if kw in task_name:
-                score = pillar_rule["score"]
-                if "sap" in task_name and selected_pillar in ["Big Data", "Intégration Systèmes", "Cloud", "Cybersécurité"]:
-                    score = 5
-                justification = pillar_rule["just"]
-                break
-                
-        results.append({"Tâche BPMN": row["Processus"], "Score (1-5)": score, "Justification": justification})
-        
-    return pd.DataFrame(results)
+def analyze_with_groq(system_prompt, user_prompt):
+    """Fonction générique pour appeler l'API Groq."""
+    try:
+        completion = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.2, # Température basse pour être factuel
+            max_tokens=2000
+        )
+        return completion.choices[0].message.content
+    except Exception as e:
+        return f"Erreur avec l'API Groq : {e}"
 
 # ==========================================
 # INTERFACE UTILISATEUR
 # ==========================================
 st.title("🏭 Hub d'Intégration : BPMN & SAP Business One 10.0")
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📋 1. Processus & Tâches", 
-    "🕸️ 2. Maturité Industrie 4.0", 
-    "🔗 3. Intégrations SAP B1", 
-    "🤖 4. Assistant IA (RAG)"
-])
+# Option pour le mode impression (retire les onglets)
+st.sidebar.header("Options d'affichage")
+print_mode = st.sidebar.checkbox("🖨️ Mode Impression (Vue globale)")
+st.sidebar.info("Cochez cette case pour afficher tout le contenu sur une seule page, puis faites **Ctrl+P** pour imprimer en PDF.")
 
-# --- ONGLET 1: PROCESSUS & TÂCHES ---
-with tab1:
-    st.header("1. Analyse du Processus")
-    
-    uploaded_bpmn = st.file_uploader("📂 Importez votre fichier processus (.bpmn ou .xml)", type=["bpmn", "xml"])
-    
-    if uploaded_bpmn is not None:
-        st.success("Fichier importé avec succès !")
-        tasks_df = extract_tasks_from_bpmn(uploaded_bpmn)
-        st.session_state['tasks_df'] = tasks_df
+st.header("1. Analyse du Processus")
+uploaded_bpmn = st.file_uploader("📂 Importez votre fichier processus (.bpmn ou .xml)", type=["bpmn", "xml"])
+
+if uploaded_bpmn is not None:
+    # On extrait les tâches si c'est un nouveau fichier
+    if "last_uploaded_file" not in st.session_state or st.session_state.last_uploaded_file != uploaded_bpmn.name:
+        st.session_state.tasks_df = extract_tasks_from_bpmn(uploaded_bpmn)
+        st.session_state.last_uploaded_file = uploaded_bpmn.name
+        st.session_state.analysis_done = False # Reset l'analyse
         
-        if not tasks_df.empty:
-            st.subheader("Tableau Synthétique des Tâches (Extrait du fichier)")
-            st.dataframe(tasks_df, use_container_width=True)
-            
-            st.subheader("2. Description Logique du Processus")
-            st.markdown("""
-            Ce processus global semble couvrir l'intégralité du cycle de vie d'une commande client dans une entreprise de confection, depuis la réception de la demande jusqu'au paiement final et l'archivage, en passant par la conception, la production et le contrôle qualité. Il est segmenté en plusieurs phases interconnectées.
-            
-            **1. Phase Initiale (Commande & Planification):**
-            * Le processus débute par la Réception de la commande client ou la Réception du Demande de prototype.
-            * La création de la commande client, des nomenclatures, et des ordres de fabrication (OF) sont des étapes clés. 
-            * La négociation de la date de réception de Matière Première (MP) avec les fournisseurs et la vérification de l'état du stock sont cruciales avant d'approvisionner.
-            * La planification de la production est réalisée via MS Project, suivie de la vérification de la capacité des chaînes.
-            
-            **2. Phase de Conception et Prototypage:**
-            * L'envoi du dossier technique aux Bureaux d'Études (BE) et modélistes marque le début de la conception.
-            * Le Prototypage est une étape majeure incluant lavage, réception d'échantillons et boucles d'approbation avec le client. En cas de refus, les paramètres sont ajustés et l'échantillon refait.
-            * Le Délavage, Grattage et Teinture sont des processus clés pour le traitement.
-            
-            **3. Phase de Production (Confection):**
-            * Une fois approuvés, le processus enchaîne avec la réalisation des tracés. La Confection représente la production réelle.
-            * Des tâches de contrôle et mesure avant lavage et après emballage valident la qualité (ou requièrent l'ajustement des défauts). L'Emballage est l'étape finale avant l'expédition.
-            
-            **4. Phase Logistique (Réception MP & Expédition):**
-            * La réception fourniture initie le pesage pour vérification. Le déchargement par nuances et la saisie SAP assurent la gestion des stocks.
-            * L'établissement des listes de colisage et la réception packing sont liés à l'expédition finale.
-            
-            **5. Phase Administrative et Financière:**
-            * Rapprochement crucial entre Bon de commande et Bon de livraison.
-            * Saisie des factures, paiements aux façonniers (80% puis 20% restants). Déclarations (TVA, délais de paiement) et préparation des dossiers de remboursement.
-            """)
-        else:
-            st.warning("Aucune tâche reconnue trouvée dans ce fichier BPMN.")
-    else:
-        st.info("Veuillez importer un fichier BPMN pour voir la liste des tâches et l'analyse.")
-
-# --- ONGLET 2: MATURITÉ ---
-with tab2:
-    st.header("Évaluation Indice de Maturité I4.0 (9 Piliers)")
+    tasks_df = st.session_state.tasks_df
     
-    col1, col2 = st.columns([1, 1])
-    radar_data = pd.DataFrame({
-        "Pilier": [
-            "Big Data", "Robots Autonomes", "Simulation", 
-            "Intégration Systèmes", "IIoT", "Cybersécurité", 
-            "Cloud", "Fabrication Additive", "Réalité Augmentée"
-        ],
-        "Score": [3, 2, 2, 4, 2, 4, 3, 1, 2]
-    })
-    
-    with col1:
-        st.subheader("Scores Globaux")
-        st.dataframe(radar_data, use_container_width=True)
+    if not tasks_df.empty:
+        st.success(f"{len(tasks_df)} tâches trouvées dans le fichier.")
         
-    with col2:
-        st.subheader("Radar de Maturité")
-        fig = px.line_polar(radar_data, r='Score', theta='Pilier', line_close=True, range_r=[0,5])
-        fig.update_traces(fill='toself', line_color="orange", fillcolor="rgba(255, 165, 0, 0.5)")
-        fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 5])))
-        st.plotly_chart(fig, use_container_width=True)
+        # Bouton pour lancer l'analyse dynamique
+        if not st.session_state.get("analysis_done", False):
+            if st.button("🧠 Lancer l'analyse complète par IA (Groq)"):
+                tasks_text = ", ".join(tasks_df["Processus"].tolist())
+                
+                with st.spinner("Génération de la description logique..."):
+                    desc_prompt = f"Voici les tâches extraites d'un processus industriel : {tasks_text}. Rédige une description logique de ce processus divisée en 3 ou 4 phases claires avec des bullet points."
+                    st.session_state.ai_description = analyze_with_groq("Tu es un expert BPMN.", desc_prompt)
+                
+                with st.spinner("Évaluation des 9 piliers de l'Industrie 4.0..."):
+                    mat_prompt = f"""Évalue ces tâches BPMN : {tasks_text}.
+                    Pour CHACUN des 9 piliers suivants (Big Data, Robots Autonomes, Simulation, Intégration Systèmes, IIoT, Cybersécurité, Cloud, Fabrication Additive, Réalité Augmentée), donne une note de 1 à 5 et une très brève justification.
+                    FORMAT STRICT REQUIS :
+                    Pilier | Note | Justification
+                    Big Data | 3 | Explication...
+                    (Génère uniquement ce tableau)"""
+                    st.session_state.ai_maturity = analyze_with_groq("Tu es un auditeur Industrie 4.0.", mat_prompt)
+                
+                with st.spinner("Génération des recommandations SAP B1..."):
+                    sap_prompt = f"""Pour les tâches suivantes : {tasks_text}. 
+                    Propose 7 à 10 recommandations d'intégration spécifiques avec SAP Business One 10.0.
+                    FORMAT STRICT REQUIS :
+                    Tâche BPMN | Module SAP B1 | Recommandation
+                    Tâche X | Achats | Explication...
+                    (Génère uniquement ce tableau markdown)"""
+                    st.session_state.ai_sap = analyze_with_groq("Tu es un architecte SAP Business One.", sap_prompt)
+                
+                st.session_state.analysis_done = True
+                st.rerun()
 
-    st.markdown("---")
-    st.subheader("Détail des Justifications par Tâche")
-    if 'tasks_df' in st.session_state and not st.session_state['tasks_df'].empty:
-        selected_pillar = st.selectbox("Sélectionnez un pilier pour voir le détail de l'évaluation :", radar_data["Pilier"].tolist())
-        detailed_scores_df = generate_detailed_scoring(st.session_state['tasks_df'], selected_pillar)
-        st.dataframe(detailed_scores_df, use_container_width=True, height=400)
+        # AFFICHAGE DES RÉSULTATS (Avec ou sans onglets selon le Mode Impression)
+        if st.session_state.get("analysis_done", False):
+            
+            # --- FONCTIONS D'AFFICHAGE ---
+            def show_tab1():
+                st.subheader("Tableau Synthétique des Tâches")
+                st.dataframe(tasks_df, use_container_width=True)
+                st.subheader("Description Logique du Processus (Générée par l'IA)")
+                st.markdown(st.session_state.ai_description)
+
+            def show_tab2():
+                st.subheader("Évaluation Indice de Maturité I4.0")
+                # Parsing dynamique du texte retourné par Groq pour faire le graphique
+                lines = st.session_state.ai_maturity.split('\n')
+                pilier_data = {"Pilier": [], "Score": []}
+                for line in lines:
+                    if "|" in line and "Pilier" not in line and "---" not in line:
+                        parts = [p.strip() for p in line.split("|")]
+                        if len(parts) >= 3:
+                            # Cleanup du texte pour extraire le score
+                            try:
+                                score = int(re.search(r'\d+', parts[1]).group())
+                                pilier_data["Pilier"].append(parts[0])
+                                pilier_data["Score"].append(score)
+                            except:
+                                pass
+                
+                if len(pilier_data["Score"]) > 0:
+                    radar_df = pd.DataFrame(pilier_data)
+                    fig = px.line_polar(radar_df, r='Score', theta='Pilier', line_close=True, range_r=[0,5])
+                    fig.update_traces(fill='toself', line_color="orange", fillcolor="rgba(255, 165, 0, 0.5)")
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                st.markdown("### Justifications Détaillées")
+                st.markdown(st.session_state.ai_maturity)
+
+            def show_tab3():
+                st.subheader("Propositions d'Intégration SAP Business One 10.0")
+                st.markdown(st.session_state.ai_sap)
+
+            def show_tab4():
+                st.subheader("🤖 Assistant SAP B1 (RAG via Groq)")
+                if not pinecone_connected:
+                    st.error(f"Erreur Pinecone : {pinecone_error}")
+                else:
+                    if "messages" not in st.session_state:
+                        st.session_state.messages = []
+
+                    for message in st.session_state.messages:
+                        with st.chat_message(message["role"]):
+                            st.markdown(message["content"])
+
+                    if prompt := st.chat_input("Ex: Comment configurer le MRP ?"):
+                        with st.chat_message("user"):
+                            st.markdown(prompt)
+                        st.session_state.messages.append({"role": "user", "content": prompt})
+
+                        with st.chat_message("assistant"):
+                            with st.spinner("Recherche (Pinecone) et Génération (Groq)..."):
+                                query_embedding = model.encode(prompt).tolist()
+                                search_results = index.query(vector=query_embedding, top_k=3, include_metadata=True)
+                                
+                                if not search_results['matches']:
+                                    context_text = "Aucune information trouvée dans la base."
+                                else:
+                                    contexts = [match['metadata']['text'] for match in search_results['matches']]
+                                    context_text = "\n\n---\n\n".join(contexts)
+
+                                system_message = f"""Tu es un expert SAP Business One.
+                                1. Réponds UNIQUEMENT avec le contexte ci-dessous. 
+                                2. Si l'info n'y est pas, dis "Information introuvable."
+                                3. Réponds en français.
+                                CONTEXTE :
+                                {context_text}"""
+
+                                try:
+                                    response = groq_client.chat.completions.create(
+                                        model=GROQ_MODEL,
+                                        messages=[
+                                            {"role": "system", "content": system_message},
+                                            {"role": "user", "content": prompt}
+                                        ],
+                                        temperature=0.01
+                                    )
+                                    answer = response.choices[0].message.content
+                                except Exception as e:
+                                    answer = f"Erreur API Groq : {str(e)}"
+
+                            st.markdown(answer)
+                            with st.expander("🔍 Sources (Pinecone)"):
+                                st.write(context_text)
+                                
+                        st.session_state.messages.append({"role": "assistant", "content": answer})
+
+            # --- LOGIQUE D'AFFICHAGE SELON LE MODE ---
+            if print_mode:
+                st.warning("🖨️ Mode Impression activé. Faites **Ctrl+P** pour imprimer ou sauvegarder en PDF. Décochez l'option dans la barre latérale pour retrouver les onglets.")
+                st.markdown("---")
+                show_tab1()
+                st.markdown("---")
+                show_tab2()
+                st.markdown("---")
+                show_tab3()
+                st.markdown("---")
+                show_tab4()
+            else:
+                tab1, tab2, tab3, tab4 = st.tabs(["📋 Processus", "🕸️ Maturité I4.0", "🔗 Intégrations SAP", "🤖 Chat RAG"])
+                with tab1: show_tab1()
+                with tab2: show_tab2()
+                with tab3: show_tab3()
+                with tab4: show_tab4()
+
     else:
-        st.info("Veuillez importer un fichier BPMN dans l'onglet 1 pour générer les tableaux de justification par tâche.")
-
-# --- ONGLET 3: SAP B1 ---
-with tab3:
-    st.header("Propositions d'Intégration SAP Business One 10.0")
-    st.markdown("Recommandations complètes basées sur votre analyse documentaire :")
-    
-    sap_integrations = [
-        {"Tâche BPMN": "Vérification des packing liste", "Module SAP B1": "Stocks/Achats", "Recommandation": "Utiliser la fonction de scan de codes-barres pour rapprocher automatiquement les articles reçus/expédiés avec la liste de colisage générée dans SAP B1. Intégrer des alertes en cas d'écart."},
-        {"Tâche BPMN": "Vérification de métrage commandée VS reçue", "Module SAP B1": "Stocks/Achats", "Recommandation": "Saisie des quantités réelles avec unité de mesure (ex: mètres) lors de la réception de marchandises. SAP B1 calcule les écarts automatiquement."},
-        {"Tâche BPMN": "Établir une liste de colisage", "Module SAP B1": "Ventes", "Recommandation": "Génération automatique de la liste de colisage à partir de la commande client ou de l'ordre de fabrication dans SAP B1 (poids, dimensions, articles)."},
-        {"Tâche BPMN": "Déclaration de TVA", "Module SAP B1": "Comptabilité/Rapports", "Recommandation": "SAP B1 permet de générer automatiquement les rapports de TVA basés sur les transactions de vente et d'achat enregistrées."},
-        {"Tâche BPMN": "Calculer les pertes", "Module SAP B1": "Production/Stocks", "Recommandation": "Suivi des quantités consommées vs. produites dans les OF. SAP B1 calcule et valorise les pertes."},
-        {"Tâche BPMN": "Paiement / Paiement aux façonniers", "Module SAP B1": "Banque/Comptabilité", "Recommandation": "Création et exécution des paiements directement depuis SAP B1. Conditions de paiement (acomptes, soldes) gérées via les fiches fournisseurs."},
-        {"Tâche BPMN": "Saisir les factures dans le système", "Module SAP B1": "Achats", "Recommandation": "Saisie directe des factures fournisseurs avec liaison aux bons de commande pour automatiser le rapprochement."},
-        {"Tâche BPMN": "Vérification quantité commandée VS livrée", "Module SAP B1": "Achats / Stocks", "Recommandation": "Rapprochement automatique des quantités des bons de commande, réceptions et factures avec alertes configurées pour les écarts."},
-        {"Tâche BPMN": "Réception de Bon de commande et de Bon de livraison", "Module SAP B1": "Achats", "Recommandation": "Saisie de la réception en référence au BC. Le système génère un BL interne et met à jour les stocks et engagements financiers."},
-        {"Tâche BPMN": "Approvisionner la matière première", "Module SAP B1": "Achats", "Recommandation": "Utiliser la planification des besoins en matériel (MRP) pour générer automatiquement des recommandations d'achat."},
-        {"Tâche BPMN": "créer la commande client", "Module SAP B1": "Ventes", "Recommandation": "Saisie structurée permettant de vérifier la disponibilité des stocks et la gestion des prix spécifiques aux clients."},
-        {"Tâche BPMN": "Créer OF", "Module SAP B1": "Production", "Recommandation": "Création automatique des OF à partir des commandes clients. L'OF consomme les nomenclatures (BOM) et gère le routage."},
-        {"Tâche BPMN": "créer des nomenclature", "Module SAP B1": "Production", "Recommandation": "Gestion centralisée des BOM. Chaque produit est lié à sa liste de composants et ressources pour le calcul des coûts."},
-        {"Tâche BPMN": "Passer la commande", "Module SAP B1": "Achats", "Recommandation": "Génération des bons de commande depuis les demandes d'achat avec envoi automatisé aux fournisseurs (e-mail ou EDI)."},
-        {"Tâche BPMN": "Vérifier l'état du stock", "Module SAP B1": "Stocks", "Recommandation": "Consultation en temps réel de l'état des stocks par article, entrepôt, lot/numéro de série."},
-        {"Tâche BPMN": "Négocier date de réception MP", "Module SAP B1": "Achats", "Recommandation": "Enregistrement et suivi des dates de livraison confirmées dans les BC avec alertes pour les retards."},
-        {"Tâche BPMN": "Préparation dossier remboursement", "Module SAP B1": "Comptabilité / Services", "Recommandation": "Utilisation des notes de crédit et régularisations comptables pour traiter les remboursements."},
-        {"Tâche BPMN": "Déclaration des délais de paiement", "Module SAP B1": "Comptabilité / Rapports", "Recommandation": "Rapports de vieillissement des dettes et créances pour suivre et déclarer les délais de paiement."},
-        {"Tâche BPMN": "Classement des factures", "Module SAP B1": "Gestion des documents", "Recommandation": "Attacher numériquement les factures scannées aux documents correspondants dans SAP B1."},
-        {"Tâche BPMN": "Réaliser le planning dans MS project", "Module SAP B1": "Production / Add-ons", "Recommandation": "Intégration bidirectionnelle : les données des OF alimentent MS Project, et les dates planifiées remontent dans SAP B1."},
-        {"Tâche BPMN": "Planifier la production", "Module SAP B1": "Production", "Recommandation": "Utiliser le module MRP pour générer des recommandations de production basées sur les commandes, prévisions et capacités."},
-        {"Tâche BPMN": "Suivi de la production", "Module SAP B1": "Production", "Recommandation": "Utiliser les OF pour suivre l'avancement. Intégration possible avec un système MES pour la saisie en temps réel."},
-        {"Tâche BPMN": "Saisie des quantités reçues", "Module SAP B1": "Stocks / Production", "Recommandation": "Enregistrement des MP reçues et quantités produites par OF pour la mise à jour des stocks et suivi des coûts."},
-        {"Tâche BPMN": "Partager l'état du stock avec les achats", "Module SAP B1": "Stocks / Achats", "Recommandation": "Les rapports standard et le module MRP garantissent que les informations sont à jour et transparentes entre services."}
-    ]
-    
-    st.dataframe(pd.DataFrame(sap_integrations), use_container_width=True, height=600)
-
-# --- ONGLET 4: ASSISTANT IA ---
-with tab4:
-    st.header("🤖 Assistant SAP B1 (Open Source)")
-    st.markdown("Posez vos questions. L'IA lit uniquement vos documents vectorisés (Pinecone).")
-
-    if not pinecone_connected:
-        st.error(f"Erreur Pinecone : {pinecone_error}")
-    else:
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        if prompt := st.chat_input("Ex: Comment configurer le MRP ?"):
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            st.session_state.messages.append({"role": "user", "content": prompt})
-
-            with st.chat_message("assistant"):
-                with st.spinner("Recherche et génération de la réponse..."):
-                    query_embedding = model.encode(prompt).tolist()
-                    search_results = index.query(vector=query_embedding, top_k=3, include_metadata=True)
-                    
-                    if not search_results['matches']:
-                        context_text = "Aucune information trouvée dans la base."
-                    else:
-                        contexts = [match['metadata']['text'] for match in search_results['matches']]
-                        context_text = "\n\n---\n\n".join(contexts)
-
-                    system_message = f"""Tu es un expert SAP Business One.
-Règles: 
-1. Réponds UNIQUEMENT avec le contexte ci-dessous. 
-2. Si la réponse n'y est pas, dis "Information introuvable."
-3. Réponds en français.
-
-CONTEXTE :
-{context_text}"""
-
-                    messages = [
-                        {"role": "system", "content": system_message},
-                        {"role": "user", "content": prompt}
-                    ]
-
-                    try:
-                        # Utilisation de la nouvelle syntaxe conversationnelle
-                        response = hf_client.chat_completion(
-                            messages=messages, 
-                            max_tokens=400, 
-                            temperature=0.01
-                        )
-                        answer = response.choices[0].message.content
-                    except Exception as e:
-                        answer = f"Erreur API : {str(e)}"
-
-                st.markdown(answer)
-                with st.expander("🔍 Sources (Pinecone)"):
-                    st.write(context_text)
-                    
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+        st.warning("Aucune tâche reconnue dans ce fichier.")
