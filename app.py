@@ -57,7 +57,7 @@ except Exception as e:
 # Initialisation du client Groq
 groq_api_key = st.secrets.get("GROQ_API_KEY", "YOUR_GROQ_API_KEY")
 groq_client = Groq(api_key=groq_api_key)
-GROQ_MODEL = "llama3-70b-8192" # Modèle très puissant pour l'analyse
+GROQ_MODEL = "llama-3.3-70b-versatile" # Modèle très puissant pour l'analyse
 
 # ==========================================
 # 2. FONCTIONS D'EXTRACTION ET D'ANALYSE DYNAMIQUE
@@ -128,7 +128,7 @@ if uploaded_bpmn is not None:
         
         # Bouton pour lancer l'analyse dynamique
         if not st.session_state.get("analysis_done", False):
-            if st.button("🧠 Lancer l'analyse complète par IA (Groq)"):
+            if st.button("🧠 Lancer une analyse complète"):
                 tasks_text = ", ".join(tasks_df["Processus"].tolist())
                 
                 with st.spinner("Génération de la description logique..."):
